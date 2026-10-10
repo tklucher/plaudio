@@ -15,7 +15,10 @@ PyInstaller.__main__.run([
     "--name", "PlaudIO",
     "--icon", str(ICON),
     "--add-data", f"{ICON}{SEP}.",            # window icon, found via sys._MEIPASS
-    "--collect-submodules", "mcp",
+    # Only the client side of mcp: mcp.cli needs extra packages and exits on import.
+    "--collect-submodules", "mcp.client",
+    "--collect-submodules", "mcp.shared",
+    "--collect-submodules", "mcp.os",
     "--collect-data", "googleapiclient",      # bundled Drive discovery document
     "--hidden-import", "googleapiclient.discovery",
     "--hidden-import", "google_auth_oauthlib.flow",
