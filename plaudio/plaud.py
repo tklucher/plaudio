@@ -9,6 +9,7 @@ recordings, transcripts and AI summaries, so this client speaks MCP to it.
 from __future__ import annotations
 
 import json
+import sys
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import date
@@ -58,7 +59,8 @@ def _as_str(v: Any) -> str | None:
 # --------------------------------------------------------------------------
 def result_payload(result: Any) -> Any:
     """Turn an MCP CallToolResult into Python data (dict/list) or plain text."""
-    if getattr(result, "isError", False):
+    # Field names differ between mcp 1.x (camelCase) and 2.x (snake_case).
+    if getattr(result, "is_error", None) or getattr(result, "isError", False):
         text = " ".join(getattr(c, "text", "") for c in result.content)
         raise PlaudError(text or "Plaud MCP tool returned an error")
     texts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
@@ -67,7 +69,9 @@ def result_payload(result: Any) -> Any:
         return json.loads(joined)
     except (json.JSONDecodeError, ValueError):
         pass
-    structured = getattr(result, "structuredContent", None)
+    structured = getattr(result, "structured_content", None)
+    if structured is None:
+        structured = getattr(result, "structuredContent", None)
     if isinstance(structured, dict) and set(structured) == {"result"}:
         structured = structured["result"]  # FastMCP-style wrapper
     if isinstance(structured, str):
@@ -104,25 +108,38 @@ def find_recordings(payload: Any) -> list[dict[str, Any]]:
 class PlaudClient:
     """Async context manager wrapping one Plaud MCP server subprocess."""
 
-    def __init__(self, command: list[str]):
+    def __init__(self, command: list[str], errlog: Any = None):
         self.command = command
+        # Where the MCP server's stderr goes. A windowed .exe has no sys.stderr,
+        # so the GUI passes a log file here.
+        self.errlog = errlog
         self._stack = AsyncExitStack()
         self.session: ClientSession | None = None
         self._id_params: dict[str, str] = {}
+        self.tool_names: set[str] = set()
 
     async def __aenter__(self) -> "PlaudClient":
+        try:
+            await self._start()
+        except BaseException:
+            await self._stack.aclose()  # don't leave the server process hanging
+            raise
+        return self
+
+    async def _start(self) -> None:
         params = StdioServerParameters(command=self.command[0], args=self.command[1:])
-        read, write = await self._stack.enter_async_context(stdio_client(params))
+        errlog = self.errlog or sys.stderr
+        read, write = await self._stack.enter_async_context(stdio_client(params, errlog=errlog))
         self.session = await self._stack.enter_async_context(ClientSession(read, write))
         await self.session.initialize()
         tools = await self.session.list_tools()
+        self.tool_names = {t.name for t in tools.tools}
         # Learn each tool's ID parameter name from its schema (e.g. "file_id" vs "id").
         for tool in tools.tools:
-            schema = tool.inputSchema or {}
+            schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {}
             required = schema.get("required") or list((schema.get("properties") or {}).keys())
             if required:
                 self._id_params[tool.name] = required[0]
-        return self
 
     async def __aexit__(self, *exc: Any) -> None:
         await self._stack.aclose()

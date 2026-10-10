@@ -18,7 +18,20 @@ class GoogleSetupError(RuntimeError):
     pass
 
 
-def get_credentials(client_secrets: Path, token_path: Path, interactive: bool = True):
+def client_config(client_id: str, client_secret: str) -> dict:
+    """OAuth client settings built from the two values typed into the app,
+    in the same shape as the 'Desktop app' JSON you can download from Google."""
+    return {"installed": {
+        "client_id": client_id.strip(),
+        "client_secret": client_secret.strip(),
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "redirect_uris": ["http://localhost"],
+    }}
+
+
+def get_credentials(client_secrets: Path, token_path: Path, interactive: bool = True,
+                    client_cfg: dict | None = None):
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -40,13 +53,17 @@ def get_credentials(client_secrets: Path, token_path: Path, interactive: bool = 
                 ) from exc
     if not interactive:
         raise GoogleSetupError("Not signed in to Google. Run `plaudio auth-google` first.")
-    if not client_secrets.exists():
+    if client_cfg:
+        flow = InstalledAppFlow.from_client_config(client_cfg, SCOPES)
+    elif client_secrets.exists():
+        flow = InstalledAppFlow.from_client_secrets_file(str(client_secrets), SCOPES)
+    else:
         raise GoogleSetupError(
             f"Missing {client_secrets}. Download your OAuth 'Desktop app' client JSON from "
             "Google Cloud Console and save it there (see README)."
         )
-    flow = InstalledAppFlow.from_client_secrets_file(str(client_secrets), SCOPES)
     creds = flow.run_local_server(port=0, open_browser=True)
+    token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(creds.to_json())
     token_path.chmod(0o600)
     return creds
@@ -58,6 +75,8 @@ def build_drive(creds):
 
 
 class DocsWriter:
+    content_format = "html"
+
     def __init__(self, drive: Any):
         self.drive = drive
 
@@ -97,3 +116,7 @@ class DocsWriter:
         }
         created = self.drive.files().create(body=body, media_body=media, fields="id").execute()
         return created["id"]
+
+    @staticmethod
+    def link(doc_id: str) -> str:
+        return f"https://docs.google.com/document/d/{doc_id}"

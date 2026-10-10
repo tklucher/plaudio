@@ -11,6 +11,41 @@ Plaud account ──(Plaud MCP server)──▶ plaudio ──(Drive API)──�
                                    ~/.plaudio/state.json  (what's already been exported)
 ```
 
+## Desktop app (Windows)
+
+If you'd rather not use the command line, use **PlaudIO.exe**. It does exactly what
+`plaudio sync` does, in a small window:
+
+1. Type your **Google Client ID** and **Google Client Secret** (step 3 below shows where
+   to get them). The **Anthropic API key** is optional; with it, Claude writes a summary
+   when Plaud doesn't have one.
+2. Press the **big red button**. It checks Plaud for recordings that haven't been
+   exported yet and creates a Google Doc for each one. The first time, browser windows
+   open so you can sign in to Plaud and Google.
+3. Turn on the **Markdown switch** to save `.md` files in a folder on your PC instead of
+   creating Google Docs (no Google keys needed then). The default folder is
+   `Documents\Plaud Transcripts`.
+
+Your keys and choices are saved in `%USERPROFILE%\.plaudio\settings.json`, so you
+only type them once. Markdown exports keep their own history (`state-markdown.json`),
+so a recording saved as Markdown can still be sent to Google Docs later.
+
+**You also need Node.js** (the LTS version from https://nodejs.org). PlaudIO uses it
+in the background to talk to Plaud. The app tells you if it's missing.
+
+### Getting PlaudIO.exe
+
+- **Download it:** every push builds the app on GitHub (Actions → "Build Windows app"
+  → the latest run → *PlaudIO-windows* artifact). Pushing a tag like `v0.2.0` also
+  attaches the .exe to a GitHub Release.
+- **Or build it yourself** on a Windows PC with Python 3.10+ installed: double-click
+  `build_windows.bat`. The app appears in `dist\PlaudIO.exe`.
+
+The .exe isn't code-signed, so the first time Windows may show "Windows protected your
+PC". Click **More info → Run anyway**.
+
+If you installed with pip, `plaudio-gui` opens the same window on any OS.
+
 ## Why not the "Plaud Embedded" API?
 
 Plaud Embedded (docs.plaud.ai/plaud-embedded) is a partner platform for building your
@@ -103,7 +138,8 @@ A lock file stops two runs from overlapping.
 
 | Command | What it does |
 |---|---|
-| `plaudio sync` | Export new recordings. Options: `--dry-run`, `--limit N`, `--full` (rescan everything), `--lookback-days N` (default 14), `--require-summary`, `--mark-existing` |
+| `plaudio sync` | Export new recordings. Options: `--dry-run`, `--limit N`, `--full` (rescan everything), `--lookback-days N` (default 14), `--require-summary`, `--mark-existing`, `--markdown DIR` (save .md files instead of Google Docs) |
+| `plaudio-gui` | Open the desktop app |
 | `plaudio status` | Last run time, folder link, recently exported docs |
 | `plaudio inspect [ID]` | Show raw Plaud data. With no ID it lists recent recordings |
 | `plaudio login` / `plaudio auth-google` | Sign in again |

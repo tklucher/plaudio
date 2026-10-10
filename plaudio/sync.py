@@ -107,11 +107,15 @@ async def run_sync(plaud: Any, writer: Any, state: State, folder_name: str,
                 echo(f"  = {title} (already in Drive)")
                 continue
 
-            html_doc = render.build_doc_html(rec, summary_md, transcript, source)
-            doc_id = writer.create_doc(folder_id, title, html_doc, rec.id)
+            if getattr(writer, "content_format", "html") == "markdown":
+                content = render.build_doc_markdown(rec, summary_md, transcript, source)
+            else:
+                content = render.build_doc_html(rec, summary_md, transcript, source)
+            doc_id = writer.create_doc(folder_id, title, content, rec.id)
             state.mark_processed(rec.id, doc_id, rec.name)
             report.created.append((rec, doc_id))
-            echo(f"  + {title}  https://docs.google.com/document/d/{doc_id}")
+            link = writer.link(doc_id) if hasattr(writer, "link") else doc_id
+            echo(f"  + {title}  {link}")
         except Exception as exc:  # keep going; this one is retried next run
             log.debug("failed on %s", rec.id, exc_info=True)
             report.failed.append((rec, str(exc)))

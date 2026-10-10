@@ -1,9 +1,12 @@
 """A stand-in for @plaud-ai/mcp used by the tests (same tool names/params)."""
 import json
 
-from mcp.server.fastmcp import FastMCP
+try:  # mcp 1.x
+    from mcp.server.fastmcp import FastMCP as _Server
+except ImportError:  # mcp 2.x renamed FastMCP -> MCPServer
+    from mcp.server.mcpserver import MCPServer as _Server
 
-mcp = FastMCP("fake-plaud")
+mcp = _Server("fake-plaud")
 
 FILES = [
     {"id": f"rec{i}", "name": f"Meeting {i}", "created_at": f"2026-09-{10+i:02d}T17:00:00Z",

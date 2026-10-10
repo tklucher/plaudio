@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,6 +8,9 @@ from plaudio import render
 from plaudio.plaud import PlaudClient, Recording
 from plaudio.state import State
 from plaudio.sync import SyncOptions, run_sync
+
+# The Claude summary fallback would change results if a key happens to be set.
+os.environ.pop("ANTHROPIC_API_KEY", None)
 
 FAKE = [sys.executable, str(Path(__file__).with_name("fake_plaud_mcp.py"))]
 
@@ -80,7 +84,8 @@ def test_limit_and_require_summary(tmp_path):
     w = FakeWriter()
     _, rep = asyncio.run(_sync(tmp_path, w, limit=2, require_summary=True))
     assert [r.id for r, _ in rep.created] == ["rec1", "rec2"]
-    _, rep = asyncio.run(_sync(tmp_path, w, require_summary=True))
+    # big lookback: the fake recordings are dated Sept 2026, so keep the test date-proof
+    _, rep = asyncio.run(_sync(tmp_path, w, require_summary=True, lookback_days=36500))
     assert "rec3" in [r.id for r in rep.skipped_not_ready]
 
 
@@ -92,3 +97,69 @@ def test_render_variants():
     assert render.summary_markdown({"note_list": [{"content": "x"}]}) == "x"
     rec = Recording(id="a", name="Standup", start_at="1758650000000")
     assert render.doc_title(rec).endswith("– Standup")
+
+
+# ---------------------------------------------------------- markdown + app
+def test_markdown_writer(tmp_path):
+    from plaudio.mdfiles import MarkdownWriter, safe_filename
+    out = tmp_path / "md"
+    state = State(tmp_path / "state-markdown.json")
+
+    async def go():
+        async with PlaudClient(FAKE) as plaud:
+            return await run_sync(plaud, MarkdownWriter(out), state, "x", SyncOptions(),
+                                  echo=lambda s: None)
+    rep = asyncio.run(go())
+    files = sorted(out.glob("*.md"))
+    assert len(rep.created) == 6 and len(files) == 6
+    text = next(f for f in files if "Meeting 1" in f.name).read_text(encoding="utf-8")
+    assert text.startswith("<!-- plaud_id: rec1 -->\n# Meeting 1")
+    assert text.index("## Summary") < text.index("## Full transcript")
+    assert "**Speaker 1:** Hello there. Let's begin." in text
+    assert "`[00:01:05]`" in text and "Sounds \\<good\\> & fine." in text
+    # lost state -> the files themselves stop duplicates
+    (tmp_path / "state-markdown.json").unlink()
+    state = State(tmp_path / "state-markdown.json")
+    rep = asyncio.run(go())
+    assert rep.created == [] and len(rep.already_in_drive) == 6
+    assert safe_filename('a/b:c*?"<>|') == "a-b-c------"
+
+
+def test_app_run_job_markdown(tmp_path):
+    from plaudio.app import AppSettings, run_job
+    from plaudio.config import Config
+    cfg = Config(home=tmp_path, folder_name="Plaud Transcripts", plaud_mcp_command=FAKE)
+    s = AppSettings(markdown_mode=True, markdown_dir=str(tmp_path / "out"))
+    s.save(cfg.settings_path)
+    assert AppSettings.load(cfg.settings_path) == s
+    lines = []
+    res = asyncio.run(run_job(cfg, s, lines.append))
+    assert res.markdown and len(res.report.created) == 6
+    assert res.location == str(tmp_path / "out")
+    assert not (tmp_path / "state.json").exists()      # Google Docs history untouched
+    res = asyncio.run(run_job(cfg, s, lines.append))
+    assert res.report.created == []
+
+
+def test_app_google_needs_keys(tmp_path):
+    from plaudio.app import AppSettings, SetupError, _google_writer
+    from plaudio.config import Config
+    cfg = Config(home=tmp_path, folder_name="x", plaud_mcp_command=FAKE)
+    for s in (AppSettings(), AppSettings(google_client_id="only-id")):
+        try:
+            _google_writer(cfg, s, lambda m: None)
+            raise AssertionError("expected SetupError")
+        except SetupError:
+            pass
+
+
+def test_lock_blocks_second_run(tmp_path):
+    from plaudio.lock import AlreadyRunning, single_instance
+    with single_instance(tmp_path / "l"):
+        try:
+            with single_instance(tmp_path / "l"):
+                raise AssertionError("second lock should fail")
+        except AlreadyRunning:
+            pass
+    with single_instance(tmp_path / "l"):
+        pass

@@ -17,6 +17,16 @@ class Config:
         return self.home / "state.json"
 
     @property
+    def markdown_state_path(self) -> Path:
+        # Kept separate from state.json so exporting to Markdown never stops a
+        # recording from also going to Google Docs later (and vice versa).
+        return self.home / "state-markdown.json"
+
+    @property
+    def settings_path(self) -> Path:
+        return self.home / "settings.json"  # keys and choices saved by the desktop app
+
+    @property
     def google_client_secrets(self) -> Path:
         return self.home / "credentials.json"
 

@@ -3,6 +3,8 @@
   plaudio login          sign in to Plaud (opens a browser)
   plaudio auth-google    sign in to Google (opens a browser)
   plaudio sync           create a Doc for every recording not yet exported
+  plaudio sync --markdown DIR   ...or save .md files in DIR instead
+  plaudio-gui            open the desktop app (same thing, with buttons)
   plaudio status         show what has been exported so far
   plaudio inspect ID     print the raw Plaud data for one recording (debugging)
 """
@@ -13,28 +15,11 @@ import asyncio
 import json
 import logging
 import sys
-from contextlib import contextmanager
 from pathlib import Path
 
 from .config import Config, load_config
+from .lock import AlreadyRunning, single_instance
 from .state import State
-
-
-@contextmanager
-def single_instance(lock_path: Path):
-    """Stop two scheduled runs from overlapping and creating duplicate docs."""
-    try:
-        import fcntl
-    except ImportError:  # Windows: skip locking
-        yield
-        return
-    with open(lock_path, "w") as fh:
-        try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print("Another plaudio sync is already running; exiting.", file=sys.stderr)
-            sys.exit(0)
-        yield
 
 
 def _plaud(cfg: Config):
@@ -57,28 +42,37 @@ def cmd_auth_google(cfg: Config, _args) -> int:
 
 
 async def cmd_sync(cfg: Config, args) -> int:
-    from .gdocs import DocsWriter, GoogleSetupError, build_drive, get_credentials
     from .sync import SyncOptions, run_sync
 
     opts = SyncOptions(dry_run=args.dry_run, full=args.full, lookback_days=args.lookback_days,
                        limit=args.limit, require_summary=args.require_summary,
                        mark_only=args.mark_existing)
-    with single_instance(cfg.lock_path):
-        state = State(cfg.state_path)
-        writer = None
-        if not (opts.dry_run or opts.mark_only):
-            try:
-                creds = get_credentials(cfg.google_client_secrets, cfg.google_token_path,
-                                        interactive=sys.stdin.isatty())
-            except GoogleSetupError as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                return 2
-            writer = DocsWriter(build_drive(creds))
-        async with _plaud(cfg) as plaud:
-            report = await run_sync(plaud, writer, state, cfg.folder_name, opts)
-        if state.folder_id and report.created and not opts.dry_run:
-            print(f"Folder: https://drive.google.com/drive/folders/{state.folder_id}")
-        return 0 if report.ok else 1
+    try:
+        with single_instance(cfg.lock_path):
+            if args.markdown:
+                from .mdfiles import MarkdownWriter
+                state = State(cfg.markdown_state_path)
+                writer = MarkdownWriter(Path(args.markdown))
+            else:
+                state = State(cfg.state_path)
+                writer = None
+                if not (opts.dry_run or opts.mark_only):
+                    from .gdocs import DocsWriter, GoogleSetupError, build_drive, get_credentials
+                    try:
+                        creds = get_credentials(cfg.google_client_secrets, cfg.google_token_path,
+                                                interactive=sys.stdin.isatty())
+                    except GoogleSetupError as exc:
+                        print(f"error: {exc}", file=sys.stderr)
+                        return 2
+                    writer = DocsWriter(build_drive(creds))
+            async with _plaud(cfg) as plaud:
+                report = await run_sync(plaud, writer, state, cfg.folder_name, opts)
+            if state.folder_id and report.created and not opts.dry_run and not args.markdown:
+                print(f"Folder: https://drive.google.com/drive/folders/{state.folder_id}")
+            return 0 if report.ok else 1
+    except AlreadyRunning as exc:
+        print(f"{exc} Exiting.", file=sys.stderr)
+        return 0
 
 
 def cmd_status(cfg: Config, _args) -> int:
@@ -130,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="wait until a summary exists before exporting a recording")
     s.add_argument("--mark-existing", action="store_true",
                    help="mark every current recording as done without creating docs")
+    s.add_argument("--markdown", metavar="DIR",
+                   help="save Markdown (.md) files in DIR instead of creating Google Docs")
     sub.add_parser("status", help="show export history")
     i = sub.add_parser("inspect", help="dump raw Plaud data (no ID = list recent)")
     i.add_argument("recording_id", nargs="?")
