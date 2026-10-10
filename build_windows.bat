@@ -11,14 +11,7 @@ call .venv\Scripts\activate.bat || goto :error
 python -m pip install --upgrade pip || goto :error
 python -m pip install . "pyinstaller>=6" || goto :error
 
-pyinstaller --noconfirm --clean --onefile --windowed --name PlaudIO ^
-    --icon plaudio\plaudio.ico ^
-    --add-data "plaudio\plaudio.ico;." ^
-    --collect-submodules mcp ^
-    --collect-data googleapiclient ^
-    --hidden-import googleapiclient.discovery ^
-    --hidden-import google_auth_oauthlib.flow ^
-    packaging\plaudio_gui.py || goto :error
+python packaging\build_exe.py || goto :error
 
 echo.
 echo Built dist\PlaudIO.exe
