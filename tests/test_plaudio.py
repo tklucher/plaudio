@@ -163,3 +163,114 @@ def test_lock_blocks_second_run(tmp_path):
             pass
     with single_instance(tmp_path / "l"):
         pass
+
+
+# ------------------------------------------------- Plaud's hosted connector
+import socket
+import subprocess
+import time
+import urllib.request
+from contextlib import contextmanager
+
+HTTP_FAKE = Path(__file__).with_name("fake_plaud_http.py")
+
+
+def _free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@contextmanager
+def hosted_plaud(access_ttl=3600):
+    port = _free_port()
+    env = dict(os.environ, FAKE_ACCESS_TTL=str(access_ttl))
+    proc = subprocess.Popen([sys.executable, str(HTTP_FAKE), str(port)], env=env,
+                            cwd=str(HTTP_FAKE.parent),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        yield f"http://127.0.0.1:{port}/mcp"
+    finally:
+        proc.terminate()
+        proc.wait(10)
+
+
+class FakeBrowser:
+    """Follows the sign-in redirect like a browser where the user clicks Authorize."""
+    def __init__(self):
+        self.opened = 0
+
+    def __call__(self, url):
+        self.opened += 1
+        with urllib.request.urlopen(url, timeout=10) as r:
+            assert b"Signed in to Plaud" in r.read()
+
+
+def _hosted_cfg(tmp_path, url, command=None):
+    from plaudio.config import Config
+    return Config(home=tmp_path, folder_name="Plaud Transcripts",
+                  plaud_mcp_command=command or ["npx-not-installed"], plaud_url=url,
+                  plaud_redirect_port=_free_port())
+
+
+def test_hosted_sign_in_once_then_reuse(tmp_path):
+    from plaudio.app import AppSettings, run_job
+    browser = FakeBrowser()
+    s = AppSettings(markdown_mode=True, markdown_dir=str(tmp_path / "out"))
+    with hosted_plaud() as url:
+        cfg = _hosted_cfg(tmp_path, url)
+        res = asyncio.run(run_job(cfg, s, lambda m: None, open_browser=browser))
+        assert len(res.report.created) == 6 and browser.opened == 1
+        assert cfg.plaud_token_path.exists()
+        res = asyncio.run(run_job(cfg, s, lambda m: None, open_browser=browser))
+        assert res.report.created == [] and browser.opened == 1   # no second sign-in
+
+
+def test_hosted_token_refresh(tmp_path):
+    from plaudio.app import open_plaud
+    browser = FakeBrowser()
+
+    async def whoami(cfg):
+        async with open_plaud(cfg, lambda m: None, open_browser=browser) as plaud:
+            return await plaud.whoami()
+
+    with hosted_plaud(access_ttl=1) as url:
+        cfg = _hosted_cfg(tmp_path, url)
+        assert asyncio.run(whoami(cfg))["email"]
+        time.sleep(2.5)                                            # access token expired
+        assert asyncio.run(whoami(cfg))["email"] and browser.opened == 1
+
+
+def test_hosted_unreachable_falls_back_to_local(tmp_path):
+    from plaudio.app import open_plaud
+    cfg = _hosted_cfg(tmp_path, f"http://127.0.0.1:{_free_port()}/mcp", command=FAKE)
+    lines = []
+
+    async def go():
+        async with open_plaud(cfg, lines.append, open_browser=FakeBrowser()) as plaud:
+            return plaud.command is not None, len(await plaud.list_recordings())
+    assert asyncio.run(go()) == (True, 7)
+    assert any("Node.js connector" in line for line in lines)
+
+
+def test_hosted_unreachable_without_node_explains(tmp_path):
+    from plaudio.app import SetupError, open_plaud
+    cfg = _hosted_cfg(tmp_path, f"http://127.0.0.1:{_free_port()}/mcp", command=["npx"])
+    os.environ["PATH"], old = "", os.environ.get("PATH", "")
+
+    async def go():
+        async with open_plaud(cfg, lambda m: None, open_browser=FakeBrowser()):
+            pass
+    try:
+        asyncio.run(go())
+        raise AssertionError("expected SetupError")
+    except SetupError as exc:
+        assert "Couldn't connect to Plaud" in str(exc)
+    finally:
+        os.environ["PATH"] = old

@@ -439,7 +439,12 @@ def self_test(report_path: str) -> int:
         import googleapiclient.discovery
         import google_auth_oauthlib.flow  # noqa: F401
         import mcp.client.stdio  # noqa: F401
-        from . import app, gdocs, mdfiles, render, summarize, sync  # noqa: F401
+        import httpx2
+        from . import app, gdocs, mdfiles, plaud_auth, render, summarize, sync  # noqa: F401
+        from mcp.client.streamable_http import streamable_http_client  # noqa: F401
+        # HTTPS works inside the .exe (certificates bundled) and Plaud's server answers
+        r = httpx2.get("https://mcp.plaud.ai/.well-known/oauth-authorization-server", timeout=20)
+        lines.append(f"Plaud hosted connector metadata: HTTP {r.status_code}")
         googleapiclient.discovery.build("drive", "v3", developerKey="self-test",
                                         cache_discovery=False, static_discovery=True)
         lines.append("imports + Drive discovery document: ok")

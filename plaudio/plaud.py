@@ -108,9 +108,16 @@ def find_recordings(payload: Any) -> list[dict[str, Any]]:
 class PlaudClient:
     """Async context manager wrapping one Plaud MCP server subprocess."""
 
-    def __init__(self, command: list[str], errlog: Any = None):
+    def __init__(self, command: list[str] | None = None, errlog: Any = None, *,
+                 url: str | None = None, auth: Any = None):
+        """Either run a local MCP server (`command`, needs Node.js for Plaud's) or
+        connect to a hosted one over HTTPS (`url`, with `auth` doing the sign-in)."""
+        if not command and not url:
+            raise ValueError("PlaudClient needs a command or a url")
         self.command = command
-        # Where the MCP server's stderr goes. A windowed .exe has no sys.stderr,
+        self.url = url
+        self.auth = auth
+        # Where a local MCP server's stderr goes. A windowed .exe has no sys.stderr,
         # so the GUI passes a log file here.
         self.errlog = errlog
         self._stack = AsyncExitStack()
@@ -127,9 +134,17 @@ class PlaudClient:
         return self
 
     async def _start(self) -> None:
-        params = StdioServerParameters(command=self.command[0], args=self.command[1:])
-        errlog = self.errlog or sys.stderr
-        read, write = await self._stack.enter_async_context(stdio_client(params, errlog=errlog))
+        if self.url:
+            import httpx2
+            from mcp.client.streamable_http import streamable_http_client
+            http = await self._stack.enter_async_context(httpx2.AsyncClient(
+                auth=self.auth, timeout=httpx2.Timeout(30.0, read=300.0)))
+            read, write = await self._stack.enter_async_context(
+                streamable_http_client(self.url, http_client=http))
+        else:
+            params = StdioServerParameters(command=self.command[0], args=self.command[1:])
+            errlog = self.errlog or sys.stderr
+            read, write = await self._stack.enter_async_context(stdio_client(params, errlog=errlog))
         self.session = await self._stack.enter_async_context(ClientSession(read, write))
         await self.session.initialize()
         tools = await self.session.list_tools()
@@ -185,3 +200,10 @@ class PlaudClient:
 
     async def get_note(self, recording_id: str) -> Any:
         return await self._call_with_id("get_note", recording_id)
+
+
+def first_error(exc: BaseException) -> BaseException:
+    """Connection errors often arrive wrapped in (nested) ExceptionGroups; dig out the real one."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return exc

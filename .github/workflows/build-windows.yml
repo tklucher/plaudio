@@ -28,6 +28,17 @@ jobs:
       - name: Tests
         run: python tests/run.py
 
+      - name: Check Plaud accepts PlaudIO sign-in (only for [plaud-probe] commits)
+        if: contains(github.event.head_commit.message, '[plaud-probe]')
+        shell: pwsh
+        run: |
+          python packaging/probe_plaud.py *> probe.log
+          $code = $LASTEXITCODE
+          Get-Content probe.log
+          $msg = (Get-Content probe.log) -join '%0A'
+          if ($code -ne 0) { Write-Output "::error title=Plaud probe::$msg"; exit $code }
+          Write-Output "::warning title=Plaud probe::$msg"
+
       - name: Build PlaudIO.exe
         shell: pwsh
         run: |

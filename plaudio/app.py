@@ -9,13 +9,15 @@ import asyncio
 import json
 import os
 import shutil
+import webbrowser
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Callable
 
 from .config import Config
 from .lock import single_instance
-from .plaud import PlaudClient, PlaudError
+from .plaud import PlaudClient, PlaudError, first_error
 from .state import State
 from .sync import SyncOptions, SyncReport, run_sync
 
@@ -71,12 +73,58 @@ def check_node(cfg: Config) -> None:
     exe = cfg.plaud_mcp_command[0]
     if exe in ("npx", "node") and not shutil.which(exe):
         raise SetupError(
-            "Node.js isn't installed (or isn't on PATH). PlaudIO uses it to talk to Plaud.\n\n"
-            "Install the LTS version from https://nodejs.org, then restart PlaudIO."
-        )
+            "Node.js isn't installed (or isn't on PATH), and this setup uses the "
+            "Node.js Plaud connector.\n\nInstall the LTS version from https://nodejs.org, "
+            "then restart PlaudIO.")
+
+
+def _node_available(cfg: Config) -> bool:
+    exe = cfg.plaud_mcp_command[0]
+    return exe not in ("npx", "node") or bool(shutil.which(exe))
+
+
+@asynccontextmanager
+async def open_plaud(cfg: Config, echo: Echo, errlog: Any = None,
+                     open_browser: Callable[[str], object] = webbrowser.open):
+    """Connect to Plaud. Uses Plaud's hosted connector (no Node.js needed); if that
+    fails and Node.js happens to be installed, falls back to the local connector."""
+    if not cfg.plaud_url:
+        check_node(cfg)
+        async with PlaudClient(cfg.plaud_mcp_command, errlog) as plaud:
+            yield plaud
+        return
+
+    from .plaud_auth import PlaudSignInError, make_oauth
+
+    def browser(url: str):
+        echo("Opening Plaud sign-in in your browser. Click Authorize there…")
+        return open_browser(url)
+
+    auth = make_oauth(cfg.plaud_url, cfg.plaud_token_path, port=cfg.plaud_redirect_port,
+                      open_browser=browser)
+    client = PlaudClient(url=cfg.plaud_url, auth=auth)
+    try:
+        await client.__aenter__()
+    except BaseException as group:
+        exc = first_error(group)
+        if isinstance(exc, (PlaudSignInError, KeyboardInterrupt, asyncio.CancelledError)):
+            raise SetupError(str(exc)) from exc
+        if not _node_available(cfg):
+            raise SetupError(f"Couldn't connect to Plaud ({exc}).\n\n"
+                             "Check your internet connection and try again.") from exc
+        echo(f"Plaud's online connection didn't work ({exc}). Trying the Node.js connector…")
+        async with PlaudClient(cfg.plaud_mcp_command, errlog) as plaud:
+            yield plaud
+        return
+    try:
+        yield client
+    finally:
+        await client.__aexit__(None, None, None)
 
 
 async def _ensure_plaud_login(plaud: PlaudClient, echo: Echo) -> None:
+    if "get_current_user" not in plaud.tool_names:
+        return  # nothing to check with; a sign-in problem will show up on the first call
     try:
         await plaud.whoami()
         return
@@ -92,15 +140,19 @@ async def _ensure_plaud_login(plaud: PlaudClient, echo: Echo) -> None:
                          "then press the button again.") from exc
 
 
-async def sign_in_plaud(cfg: Config, echo: Echo, errlog: Any = None) -> None:
-    check_node(cfg)
-    echo("Starting Plaud sign-in (a browser window will open)…")
-    async with PlaudClient(cfg.plaud_mcp_command, errlog) as plaud:
-        result = await plaud.login()
-        if result:
-            echo(str(result) if not isinstance(result, (dict, list)) else json.dumps(result))
-        who = await plaud.whoami()
-        echo(f"Plaud account: {who if isinstance(who, str) else json.dumps(who)}")
+async def sign_in_plaud(cfg: Config, echo: Echo, errlog: Any = None,
+                        open_browser: Callable[[str], object] = webbrowser.open) -> None:
+    echo("Connecting to Plaud (a browser window opens if you need to sign in)…")
+    async with open_plaud(cfg, echo, errlog, open_browser) as plaud:
+        if plaud.command and "login" in plaud.tool_names:   # local connector signs in via a tool
+            result = await plaud.login()
+            if result:
+                echo(str(result) if not isinstance(result, (dict, list)) else json.dumps(result))
+        if "get_current_user" in plaud.tool_names:
+            who = await plaud.whoami()
+            echo(f"Plaud account: {who if isinstance(who, str) else json.dumps(who)}")
+        else:
+            echo("Connected to Plaud.")
 
 
 def _google_writer(cfg: Config, settings: AppSettings, echo: Echo):
@@ -119,8 +171,8 @@ def _google_writer(cfg: Config, settings: AppSettings, echo: Echo):
 
 
 async def run_job(cfg: Config, settings: AppSettings, echo: Echo, errlog: Any = None,
-                  opts: SyncOptions | None = None) -> JobResult:
-    check_node(cfg)
+                  opts: SyncOptions | None = None,
+                  open_browser: Callable[[str], object] = webbrowser.open) -> JobResult:
     if settings.anthropic_api_key.strip():
         os.environ["ANTHROPIC_API_KEY"] = settings.anthropic_api_key.strip()
 
@@ -136,7 +188,7 @@ async def run_job(cfg: Config, settings: AppSettings, echo: Echo, errlog: Any = 
             state = State(cfg.state_path)
 
         echo("Connecting to Plaud…")
-        async with PlaudClient(cfg.plaud_mcp_command, errlog) as plaud:
+        async with open_plaud(cfg, echo, errlog, open_browser) as plaud:
             await _ensure_plaud_login(plaud, echo)
             report = await run_sync(plaud, writer, state, cfg.folder_name, opts or SyncOptions(),
                                     echo=echo)

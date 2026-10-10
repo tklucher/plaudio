@@ -10,7 +10,13 @@ from pathlib import Path
 class Config:
     home: Path
     folder_name: str
-    plaud_mcp_command: list[str]
+    plaud_mcp_command: list[str]          # local connector (needs Node.js); used as fallback
+    plaud_url: str | None = None          # Plaud's hosted connector; None = local only
+    plaud_redirect_port: int = 8199       # local port the browser returns to after Plaud sign-in
+
+    @property
+    def plaud_token_path(self) -> Path:
+        return self.home / "plaud_oauth.json"
 
     @property
     def state_path(self) -> Path:
@@ -42,9 +48,16 @@ class Config:
 def load_config() -> Config:
     home = Path(os.environ.get("PLAUDIO_HOME", Path.home() / ".plaudio")).expanduser()
     home.mkdir(parents=True, exist_ok=True)
-    cmd = os.environ.get("PLAUDIO_MCP_COMMAND", "npx -y @plaud-ai/mcp@latest").split()
+    custom_cmd = os.environ.get("PLAUDIO_MCP_COMMAND")
+    cmd = (custom_cmd or "npx -y @plaud-ai/mcp@latest").split()
+    # Default: Plaud's hosted connector (no Node.js needed). Setting PLAUDIO_MCP_COMMAND,
+    # or PLAUDIO_PLAUD_URL=local, switches to running a local connector instead.
+    url = os.environ.get("PLAUDIO_PLAUD_URL", "https://mcp.plaud.ai/mcp")
+    if custom_cmd or url.lower() in ("", "local", "none"):
+        url = None
     return Config(
         home=home,
         folder_name=os.environ.get("PLAUDIO_FOLDER_NAME", "Plaud Transcripts"),
         plaud_mcp_command=cmd,
+        plaud_url=url,
     )

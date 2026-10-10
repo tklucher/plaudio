@@ -23,14 +23,23 @@ from .state import State
 
 
 def _plaud(cfg: Config):
-    from .plaud import PlaudClient
-    return PlaudClient(cfg.plaud_mcp_command)
+    """Plaud's hosted connector, or the local Node.js one (see config.load_config)."""
+    from .app import open_plaud
+    return open_plaud(cfg, lambda msg: print(msg, file=sys.stderr))
 
 
 async def cmd_login(cfg: Config, _args) -> int:
-    async with _plaud(cfg) as plaud:
-        print(await plaud.login())
-        print(await plaud.whoami())
+    from .app import sign_in_plaud
+    await sign_in_plaud(cfg, print)
+    return 0
+
+
+def cmd_logout(cfg: Config, _args) -> int:
+    if cfg.plaud_token_path.exists():
+        cfg.plaud_token_path.unlink()
+        print("Signed out of Plaud on this computer (removed saved sign-in).")
+    else:
+        print("Not signed in to Plaud's online connector on this computer.")
     return 0
 
 
@@ -113,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("login", help="sign in to Plaud")
+    sub.add_parser("logout", help="forget the saved Plaud sign-in")
     sub.add_parser("auth-google", help="sign in to Google")
     s = sub.add_parser("sync", help="export new recordings to Google Docs")
     s.add_argument("--dry-run", action="store_true", help="show what would be created")
@@ -134,11 +144,16 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING,
                         format="%(levelname)s %(name)s: %(message)s")
     cfg = load_config()
-    handlers = {"login": cmd_login, "auth-google": cmd_auth_google, "sync": cmd_sync,
+    handlers = {"login": cmd_login, "logout": cmd_logout, "auth-google": cmd_auth_google, "sync": cmd_sync,
                 "status": cmd_status, "inspect": cmd_inspect}
-    result = handlers[args.cmd](cfg, args)
-    if asyncio.iscoroutine(result):
-        result = asyncio.run(result)
+    from .app import SetupError
+    try:
+        result = handlers[args.cmd](cfg, args)
+        if asyncio.iscoroutine(result):
+            result = asyncio.run(result)
+    except SetupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     return result
 
 
